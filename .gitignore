@@ -1,5 +1,7 @@
 # no build files
 build/
+cmake-build-debug/
 
 # no editor files
 .vscode/
+.idea/
