@@ -2651,6 +2651,7 @@ public:
     omp_set_num_threads(threads);
     double stream_time = 0;
     stream_time -= MPI_Wtime();
+    // 初始化通信类型，类型为Master到其Mirror
     NtsComm->init_layer_all(feature_size, Master2Mirror, CPU_T);
     // printf("call lock_free forward %d\n",rtminfo->lock_free);
     if (rtminfo->lock_free) {
@@ -2665,6 +2666,7 @@ public:
       int test = 0;
       if (rtminfo->lock_free) {
         for (int step = 0; step < partitions; step++) {
+            // 设置发送的目的partition
           int trigger_partition =
               (partition_id - step + partitions) % partitions;
           current_send_part_id = trigger_partition;
@@ -2673,6 +2675,7 @@ public:
           for (VertexId begin_v_i = partition_offset[partition_id];
                begin_v_i < partition_offset[partition_id + 1]; begin_v_i++) {
             VertexId v_i = begin_v_i;
+            // lock free的话，对每个顶点进行判断再发送，所以有第二个参数
             sparse_signal(v_i, current_send_part_id);
           }
           NtsComm->trigger_one_partition(
@@ -2689,6 +2692,7 @@ public:
           unsigned long word = active->data[WORD_OFFSET(v_i)];
           while (word != 0) {
             if (word & 1) {
+                // 非lock free直接添加到缓存中发送，不进行判断，所以第二个参数为-1
               sparse_signal(v_i, -1);
             }
             v_i++;
@@ -2703,8 +2707,10 @@ public:
         }
       }
 
+//      std::printf("完成了发送，开始进行分配\n");
+      // 下面是接收后对线程任务的分配
       for (int step = 0; step < partitions; step++) {
-        int i = -1;
+        int i = -1; // i代表接收到的partition的id
         MessageBuffer **used_buffer;
         used_buffer = NtsComm->recv_one_partition(i, step);
 
@@ -2726,6 +2732,7 @@ public:
           }
           thread_state[t_i]->status = WORKING;
         }
+//        std::printf("完成了线程的分配\n");
 #pragma omp parallel reduction(+ : reducer)
         {
           // for every thread, pre-process the received vertex infor
@@ -2735,36 +2742,48 @@ public:
           int thread_id = omp_get_thread_num();
           int s_i = get_socket_id(thread_id);
           while (true) {
+//              std::printf("Debug 1");
             VertexId b_i = __sync_fetch_and_add(&thread_state[thread_id]->curr,
                                                 basic_chunk);
+//              std::printf("Debug 2");
             if (b_i >= thread_state[thread_id]->end)
               break;
+//              std::printf("Debug 3");
             VertexId begin_b_i = b_i;
             VertexId end_b_i = b_i + basic_chunk;
             if (end_b_i > thread_state[thread_id]->end) {
               end_b_i = thread_state[thread_id]->end;
             }
+//              std::printf("Debug 4");
             for (b_i = begin_b_i; b_i < end_b_i; b_i++) {
+//                std::printf("Debug 5");
               long index = (long)b_i * sizeofM<M>(feature_size);
               VertexId v_i = *((VertexId *)(used_buffer[s_i]->data + index));
+//                std::printf("Debug 6");
               M *msg_data =
                   (M *)(used_buffer[s_i]->data + index + sizeof(VertexId));
+//                std::printf("Debug 7");
 
               // if we have edge from v_i in partition i to local partition
               if (graph_partitions[i]->src_get_active(v_i)) {
                 // then we record the buffer index and position of this vertex
                 VertexId v_trans = v_i - partition_offset[i];
                 cpu_message_index[v_trans].bufferIndex = s_i;
+//                  std::printf("Debug 8");
                 cpu_message_index[v_trans].positionIndex = b_i;
+//                  std::printf("Debug 9");
               }
             }
           }
           reducer += local_reducer;
+//            std::printf("Debug 10");
         }
+//        std::printf("完成了线程的调整\n");
         // for every thread, process the local vertex
         // and we will fetch data from other socket if neighbour's message is
         // placed on other socket a question here is that shouldn't we process
         // vertex in numa-aware manner?
+        // 下面是对于线程任务的处理，一般是进行累加
 #pragma omp parallel for
         for (VertexId begin_v_i = partition_offset[partition_id];
              begin_v_i < partition_offset[partition_id + 1];
@@ -2780,6 +2799,7 @@ public:
             word = word >> 1;
           }
         }
+//        std::printf("完成了任务的处理\n");
       }
       NtsComm->release_communicator();
     }

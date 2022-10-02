@@ -21,11 +21,14 @@ Copyright (c) 2021-2022 Qiange Wang, Northeastern University
 namespace nts {
 namespace op {
 
+/**
+ * 图操作的基类
+ */
 class ntsGraphOp {
 public:
-  Graph<Empty> *graph_;
-  VertexSubset *active_;
-    PartitionedGraph *partitioned_graph_;
+  Graph<Empty> *graph_;     // 持有分区子图
+  VertexSubset *active_;    // 活跃的图顶点
+    PartitionedGraph *partitioned_graph_;   // 包装后的分区子图
   ntsGraphOp() {}
   ntsGraphOp(PartitionedGraph *partitioned_graph,VertexSubset *active) {
     graph_ = partitioned_graph->graph_;

@@ -5,3 +5,7 @@ cmake-build-debug/
 # no editor files
 .vscode/
 .idea/
+
+# big dataset files
+./data/reddit/
+./data/OGBData/

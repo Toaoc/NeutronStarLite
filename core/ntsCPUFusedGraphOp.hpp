@@ -33,23 +33,33 @@ namespace op {
 
 class ForwardCPUfuseOp : public ntsGraphOp {
 public:
+
+    static uint64_t forward_compute_count;
+    static uint64_t backward_compute_count;
   std::vector<CSC_segment_pinned *> subgraphs;
   ForwardCPUfuseOp(PartitionedGraph *partitioned_graph,VertexSubset *active)
       : ntsGraphOp(partitioned_graph, active) {
     subgraphs = partitioned_graph->graph_chunks;
+    std::printf("\n\n子图的个数: %lu", subgraphs.size());
   }
   NtsVar forward(NtsVar &f_input) {
     //f_input = input;
+    // 创建新的forward的输出Tensor
     NtsVar f_output = graph_->Nts->NewKeyTensor(f_input, torch::DeviceType::CPU);
+    // 获取输入Tensor的写指针
     ValueType *f_input_buffer =
         graph_->Nts->getWritableBuffer(f_input, torch::DeviceType::CPU);
+    // 获取输出Tensor的写指针
     ValueType *f_output_buffer =
         graph_->Nts->getWritableBuffer(f_output, torch::DeviceType::CPU);
     memset(f_output_buffer, 0,
            sizeof(ValueType) * f_input.size(0) * f_input.size(1));
+    // 获取feature的维度大小
     int feature_size = f_input.size(1);
+    // 进行前向传播累加
     graph_->process_edges_forward_decoupled_mutisockets<int, ValueType>(
         [&](VertexId src, int current_send_partition) {
+            // lock free的话，就检查该顶点是否在另一个partition中有mirror顶点，有的话就进行发送
           if (graph_->rtminfo->lock_free) {
             VertexId src_trans = src - graph_->gnnctx->p_v_s;
             // check whether this vertex is necessary to send to
@@ -69,6 +79,7 @@ public:
             }
           } else {
             // send to mirror directly
+            // 这里是直接发送所有顶点过去
             graph_->NtsComm->emit_buffer(
                 src,
                 f_input_buffer + (src - graph_->gnnctx->p_v_s) * feature_size,
@@ -85,6 +96,7 @@ public:
               dst - graph_->partition_offset[graph_->partition_id];
           // for every vertex, accumulate the incoming feature though iterating
           // column vertices
+          // 使用pull的方式来进行遍历，CSC图，遍历其邻居，然后累加到dst顶点上
           for (long idx = subgraph->column_offset[dst_trans];
                idx < subgraph->column_offset[dst_trans + 1]; idx++) {
             VertexId src = subgraph->row_indices[idx];
@@ -102,9 +114,11 @@ public:
                 f_output_buffer + dst_trans * feature_size;
             nts_comp(local_output, local_input, nts_norm_degree(graph_, src, dst),
                  feature_size);
+            forward_compute_count++;
           }
         },
         subgraphs, feature_size, active_);
+    // 返回输出向量
     return f_output;
   }
   NtsVar backward(NtsVar &f_output_grad) {
@@ -142,6 +156,7 @@ public:
              output_grad_buffer + (dst_trans)*feature_size;
           nts_comp(local_output_buffer, local_input_buffer, nts_norm_degree(graph_,src, dst),
                feature_size);
+            backward_compute_count++;
         }
         if (graph_->rtminfo->lock_free) {
           if (subgraphs[recv_id]->src_get_active(src)) {

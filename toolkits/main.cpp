@@ -29,6 +29,7 @@ Copyright (c) 2021-2022 Qiange Wang, Northeastern University
 #include "GCN_EAGER.hpp"
 #include "GCN_EAGER_single.hpp"
 #include "GIN_GPU.hpp"
+#include "GCN_FULL_SAMPLE.hpp"
 #endif
 
 int main(int argc, char **argv) {
@@ -57,7 +58,14 @@ int main(int argc, char **argv) {
     ntsGCN->init_graph();
     ntsGCN->init_nn();
     ntsGCN->run();
-  } else if (graph->config->algorithm == std::string("GINCPU")) {
+  }else if (graph->config->algorithm == std::string("GCNFULLSAMPLE")) {
+        graph->load_directed(graph->config->edge_file, graph->config->vertices);
+        graph->generate_backward_structure();
+        GCN_FULL_SAMPLE_impl *ntsGCN = new GCN_FULL_SAMPLE_impl(graph, iterations);
+        ntsGCN->init_graph();
+        ntsGCN->init_nn();
+        ntsGCN->run();
+    } else if (graph->config->algorithm == std::string("GINCPU")) {
     graph->load_directed(graph->config->edge_file, graph->config->vertices);
     graph->generate_backward_structure();
     GIN_CPU_impl *ntsGIN = new GIN_CPU_impl(graph, iterations);

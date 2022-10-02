@@ -92,8 +92,7 @@ public:
             sampled_sgs[layer]->dst()[i_id]=sampled_sgs[layer-1]->src()[i_id];
         }
     }
-    void sample_processing(std::function<void(VertexId fanout_i,
-                VertexId dst,
+    void sample_processing(std::function<void(VertexId fanout_i, VertexId dst,
                     std::vector<VertexId> &column_offset,
                         std::vector<VertexId> &row_indices,VertexId id)> vertex_sample){
         {

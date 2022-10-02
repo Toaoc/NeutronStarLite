@@ -16,6 +16,7 @@ Copyright (c) 2021-2022 Qiange Wang, Northeastern University
 #ifndef NTSSAMPLER_HPP
 #define NTSSAMPLER_HPP
 #include <mutex>
+#include <random>
 #include <cmath>
 #include <stdlib.h>
 #include "FullyRepGraph.hpp"
@@ -161,6 +162,191 @@ public:
         }
     }
 };
+
+
+class FullBatchSampler{
+private:
+    int sample_limit;
+    std::atomic_flag sample_flag = ATOMIC_FLAG_INIT;
+    inline void deleteSampleGraph() {
+       if(using_sample_graph == nullptr) {
+           return;
+       }
+       delete []using_sample_graph->row_offset;
+       delete []using_sample_graph->column_indices;
+       delete []using_sample_graph->column_offset;
+       delete []using_sample_graph->row_indices;
+       delete using_sample_graph;
+       using_sample_graph = nullptr;
+    }
+public:
+    int sample_total;
+    int sample_count;
+    float sample_rate;
+    std::queue<std::vector<CSC_segment_pinned*>> sample_graphs;
+//    std::vector<CSC_segment_pinned> sample_graphs;
+    std::mutex queue_mutex;
+    PartitionedGraph* partitionedGraph;
+    std::vector<CSC_segment_pinned*> total_graph;
+    CSC_segment_pinned* using_sample_graph;
+
+
+    FullBatchSampler(PartitionedGraph* partitionedGraph1, int epoch_num, float sample_rate) {
+        this->partitionedGraph = partitionedGraph1;
+        this->total_graph = partitionedGraph1->graph_chunks;
+        this->using_sample_graph = nullptr;
+        this->sample_total = epoch_num;
+        this->sample_count = 0;
+        this->sample_limit = 20;
+        this->sample_rate = sample_rate;
+        std::thread(&FullBatchSampler::sampling, this);
+    }
+    ~FullBatchSampler(){
+//        auto partition_id = partitionedGraph->partition_id;
+        deleteSampleGraph();
+
+    }
+
+
+
+    std::vector<CSC_segment_pinned*> get_one() {
+        deleteSampleGraph();
+//        if(sample_count == sample_total) {
+//            return std::vector<CSC_segment_pinned*>{};
+//        }
+        while(sample_graphs.size() < sample_limit/2+1 && sample_count < sample_total) {
+            if(!sample_flag.test_and_set()) {
+                std::thread(&FullBatchSampler::sampling, this);
+                break;
+            }
+        }
+        std::vector<CSC_segment_pinned*> return_graph = std::vector<CSC_segment_pinned*>{};
+        std::unique_lock<std::mutex> uniqueLock(queue_mutex);
+        uniqueLock.lock();
+        if(sample_graphs.size() != 0) {
+            return_graph = sample_graphs.front();
+            using_sample_graph = return_graph[partitionedGraph->partition_id];
+            sample_graphs.pop();
+        }
+        uniqueLock.unlock();
+        return return_graph;
+    }
+
+    bool sample_not_finished(){
+        return sample_count != sample_total;
+    }
+
+    void sampling() {
+        if(sample_flag.test_and_set()) {
+            return;
+        }
+        while(sample_count < sample_total && sample_graphs.size() < sample_limit) {
+            reservoir_sample(sample_rate);
+            sample_count++;
+        }
+        sample_flag.clear();
+    }
+
+    void reservoir_sample(float sample_rate){
+        CSC_segment_pinned* subgraph = total_graph[partitionedGraph->partition_id];
+        auto partition_id = partitionedGraph->partition_id;
+
+        std::vector<CSC_segment_pinned*> sample_graph = total_graph;
+        auto partition_verts = partitionedGraph->partition_offset[partition_id + 1] -
+                partitionedGraph->partition_offset[partition_id];
+        auto partition_start = partitionedGraph->partition_offset[partition_id];
+        std::vector<std::vector<VertexId>> adjList, backwardAdjList;
+        adjList.resize(partition_verts);
+        backwardAdjList.resize(partition_verts);
+        std::mt19937 randGen(std::random_device{}());
+        EdgeId edgeNum = 0;
+
+//        subgraph->allocEdgeAssociateData();
+
+//        LOG_INFO("遍历边之前");
+        for(int i = 0; i < partition_verts; i++) {
+            for(int j = subgraph->row_offset[i]; j < subgraph->row_offset[i+1]; j++) {
+                assert(subgraph->column_indices[j] <= partitionedGraph->partition_offset[partition_id + 1] &&
+                        subgraph->column_indices[j] >= partitionedGraph->partition_offset[partition_id]);
+                if(randGen() % 100 < sample_rate * 100) {
+                    adjList[i].push_back(subgraph->column_indices[j]);
+                    backwardAdjList[subgraph->column_indices[j] - partition_start].push_back(i + partition_start);
+                    edgeNum++;
+                }
+            }
+        }
+
+//        for(int i = 0; i < partition_verts; i++) {
+//            assert(subgraph->row_offset[i+1] == subgraph->column_offset[i+1]);
+//            for(auto j = subgraph->row_offset[i]; j < subgraph->row_offset[i+1];j++) {
+//                auto csc_start = subgraph->row_offset[i];
+//                auto csc_end = subgraph->column_indices[j];
+//
+//                bool isFind = false;
+//                for(auto k = subgraph->column_offset[csc_end]; k < subgraph->column_offset[csc_end+1];k++) {
+//                    if(subgraph->row_indices[k] == csc_start) {
+//                        isFind = true;
+//                        break;
+//                    }
+//                }
+//                assert(isFind);
+//            }
+//        }
+//        LOG_INFO("遍历边之后");
+        VertexId *column_offset = new VertexId[partition_verts + 1];
+        VertexId *row_indices = new VertexId[edgeNum];
+        VertexId *row_offset = new VertexId[partition_verts + 1];
+        VertexId *column_indices = new VertexId[edgeNum];
+        LOG_INFO("边的总数为：%lu, 采样的边的数量: %lu", subgraph->edge_size, edgeNum);
+        if(partition_verts > 0) {
+            column_offset[0] = 0;
+            row_offset[0] = 0;
+        }
+        for(int i = 0; i < partition_verts; i++) {
+            row_offset[i+1] = row_offset[i] + backwardAdjList[i].size();
+            column_offset[i+1] = column_offset[i] + adjList[i].size();
+//            assert(row_offset[i+1] == subgraph->row_offset[i+1]);
+//            assert(column_offset[i+1] == subgraph->column_offset[i+1]);
+//            LOG_INFO("第%d次复制开始, back size: %lu, size: %lu", i, backwardAdjList[i].size(), adjList[i].size());
+//            LOG_INFO("row_offset[%d]: %u, column_offset[%d]: %u",i, row_offset[i], i, column_offset[i]);
+            memcpy(&column_indices[row_offset[i]], backwardAdjList[i].data(),
+                   sizeof(VertexId) * (backwardAdjList[i].size()));
+            memcpy(&row_indices[column_offset[i]], adjList[i].data(),
+                   sizeof(VertexId) * (adjList[i].size()));
+//            LOG_INFO("第%d次复制完成", i);
+        }
+//        LOG_INFO("复制之后");
+
+
+        CSC_segment_pinned* cscSegmentPinned = new CSC_segment_pinned{};
+        cscSegmentPinned->batch_size_forward = subgraph->batch_size_forward;
+        cscSegmentPinned->batch_size_backward = subgraph->batch_size_backward;
+        cscSegmentPinned->source_active = subgraph->source_active;
+        cscSegmentPinned->destination_active = subgraph->destination_active;
+        cscSegmentPinned->row_offset = row_offset;
+        cscSegmentPinned->column_indices = column_indices;
+        cscSegmentPinned->column_offset = column_offset;
+        cscSegmentPinned->row_indices = row_indices;
+
+//        cscSegmentPinned->row_offset = subgraph->row_offset;
+//        cscSegmentPinned->column_indices = subgraph->column_indices;
+//        cscSegmentPinned->column_offset = subgraph->column_offset;
+//        cscSegmentPinned->row_indices = subgraph->row_indices;
+//        cscSegmentPinned->source_active = subgraph->source_active;
+//        cscSegmentPinned->destination_active = subgraph->destination_active;
+
+        sample_graph[partition_id] = cscSegmentPinned;
+//        LOG_INFO("赋值之后");
+
+        std::unique_lock<std::mutex> uniqueLock(queue_mutex);
+        uniqueLock.lock();
+        sample_graphs.push(sample_graph);
+        uniqueLock.unlock();
+//        LOG_INFO("存储子图");
+
+    }
+};
+
 
 
 #endif
