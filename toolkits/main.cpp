@@ -20,6 +20,7 @@ Copyright (c) 2021-2022 Qiange Wang, Northeastern University
 #include "GCN_CPU_EAGER.hpp"
 #include "GAT_CPU_DIST.hpp"
 #include "GIN_CPU.hpp"
+#include "GCN_FULL_SAMPLE.hpp"
 #include "test_getdepneighbor_cpu.hpp"
 #if CUDA_ENABLE
 #include "test_getdepneighbor_gpu.hpp"
@@ -29,7 +30,6 @@ Copyright (c) 2021-2022 Qiange Wang, Northeastern University
 #include "GCN_EAGER.hpp"
 #include "GCN_EAGER_single.hpp"
 #include "GIN_GPU.hpp"
-#include "GCN_FULL_SAMPLE.hpp"
 #endif
 
 int main(int argc, char **argv) {

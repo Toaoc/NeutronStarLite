@@ -9,7 +9,7 @@ list(APPEND CMAKE_PREFIX_PATH "./GPU_libtorch/libtorch-1-9/libtorch/")
 project(GNNmini)
 set(ENV{LANG} "C")
 option (CUDA_ENABLE "DEFAULT ENABLE CUDA" ON)
-message(STATUS "NeutronStar buid with CUDA ${CUDA_ENABLE}")
+MESSAGE( STATUS "this var key = ${CUDA_ENABLE}.")
 
 find_package(PythonInterp REQUIRED)
 find_package(MPI REQUIRED)
