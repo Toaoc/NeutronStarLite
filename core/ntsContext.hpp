@@ -119,11 +119,13 @@ public:
       // GOPT一定要是ntsGraphOp的子类
     static_assert(std::is_base_of<nts::op::ntsGraphOp,GOPT>::value,
                 "template must be a type of graph op!");
-    
+    forward_graph_time -= get_time();
     nts::op::ntsGraphOp * curr=new GOPT(partitioned_graph,active);
     // 调用图操作的前向操作，GCN_CPU中是ForwardCPUfuseOp.forward函数
     NtsVar f_output=curr->forward(f_input);
+    forward_graph_time += get_time();
     // 如果是在训练，那么就记录相应的算子，便于反向时调用进行梯度求导
+    forward_other_time -= get_time();
     if (this->training == true) {
       NtsVar ig;
       op.push(GRAPHOP);         // 记录操作的类型
@@ -135,6 +137,7 @@ public:
       output_grad.push_back(ig);    // 为反向传播创建梯度空间
       count++;
     }
+    forward_other_time += get_time();
     return f_output;
 }
   template <typename GOPT>
@@ -445,6 +448,8 @@ template <typename NOPT>
   std::vector<IOTensorId> iot_id;   // 存储指向输入和输出tensor的数据部分的指针
   int count;    // 记录前向操作的数量
   bool training; // specify training or evaluation mode.
+  double forward_graph_time = 0;
+  double forward_other_time = 0;
 //  GraphOperation *gt;
 //  std::vector<CSC_segment_pinned *> subgraphs;
 //  bool bi_direction;

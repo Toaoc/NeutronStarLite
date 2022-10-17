@@ -49,6 +49,13 @@ public:
   double graph_time = 0;
   double all_graph_time = 0;
 
+    double forward_time = 0;
+    double backward_time = 0;
+    double test_time = 0;
+    double loss_time = 0;
+    double update_time = 0;
+    double forward_graph_time = 0;
+
   GCN_CPU_impl(Graph<Empty> *graph_, int iterations_,
                bool process_local = false, bool process_overlap = false) {
       // 赋值用户指定的变量
@@ -266,7 +273,9 @@ public:
 //      }
 
         // 首先运行图传播算子
+        forward_graph_time -= get_time();
        NtsVar Y_i= ctx->runGraphOp<nts::op::ForwardCPUfuseOp>(partitioned_graph,active,X[i]);
+       forward_graph_time += get_time();
         // 然后运行神经网络算子
         X[i + 1]=ctx->runVertexForward([&](NtsVar n_i,NtsVar v_i){
             if(i<(graph->gnnctx->layer_size.size() - 2)){
@@ -305,20 +314,30 @@ public:
             }
 
             // 执行前向传播
+            forward_time -= get_time();
             Forward();
+            forward_time += get_time();
             // 计算训练集准确度
+            test_time -= get_time();
             Test(0);
             // 计算验证集准确度
             Test(1);
             // 计算测试集准确度
             Test(2);
+            test_time += get_time();
             // 计算loss
+            loss_time -= get_time();
             Loss();
+            loss_time += get_time();
 
             // 执行loss反向传播
+            backward_time -= get_time();
             ctx->self_backward();
+            backward_time += get_time();
             // 利用梯度更新参数
+            update_time -= get_time();
             Update();
+            update_time += get_time();
 //       ctx->debug();
             if (graph->partition_id == 0)
                 std::cout << "Nts::Running.Epoch[" << i_i << "]:loss\t" << loss
@@ -327,6 +346,10 @@ public:
         exec_time += get_time();
         LOG_INFO("前向传播计算总次数：%lu", nts::op::ForwardCPUfuseOp::forward_compute_count);
         LOG_INFO("反向传播计算总次数：%lu", nts::op::ForwardCPUfuseOp::backward_compute_count);
+        LOG_INFO("前向: %lf, test: %lf, loss, %lf, 反向：%lf, update: %lf", forward_time, test_time, loss_time, backward_time, update_time);
+        LOG_INFO("前向图计算时间：%lf, 反向图计算时间：%lf", graph->forward_process_time, graph->backward_process_time);
+        LOG_INFO("上层前向图计算时间：%lf", forward_graph_time);
+
 //    std::string str="a10";
 //    at::ArrayRef<at::Dimname>names({at::Dimname::fromSymbol(at::Symbol::dimname(str)),at::Dimname::fromSymbol(at::Symbol::dimname("b10"))});
 //    at::ArrayRef<at::Dimname>names({at::Dimname::fromSymbol(at::Symbol::dimname(str)),at::Dimname::fromSymbol(at::Symbol::dimname("b10"))});

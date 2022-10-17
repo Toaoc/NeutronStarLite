@@ -221,6 +221,9 @@ public:
   double all_replication_time;
   double local_replication_time;
 
+  double forward_process_time = 0.0;
+  double backward_process_time = 0.0;
+
   Graph() {
     threads = numa_num_configured_cpus();
     //  threads=6;
@@ -2784,6 +2787,7 @@ public:
         // placed on other socket a question here is that shouldn't we process
         // vertex in numa-aware manner?
         // 下面是对于线程任务的处理，一般是进行累加
+        this->forward_process_time -= get_time();
 #pragma omp parallel for
         for (VertexId begin_v_i = partition_offset[partition_id];
              begin_v_i < partition_offset[partition_id + 1];
@@ -2800,6 +2804,7 @@ public:
           }
         }
 //        std::printf("完成了任务的处理\n");
+        this->forward_process_time += get_time();
       }
       NtsComm->release_communicator();
     }
@@ -3166,6 +3171,7 @@ public:
         for (int t_i = 0; t_i < threads; t_i++) {
           *thread_state[t_i] = tuned_chunks_dense_backward[i][t_i];
         }
+        this->backward_process_time -= get_time();
 #pragma omp parallel
         {
           int thread_id = omp_get_thread_num();
@@ -3234,6 +3240,7 @@ public:
             }
           }
         }
+        this->backward_process_time += get_time();
         // notify the partition is ready to send
         // background worker will start to sending data to other partitions
         NtsComm->trigger_one_partition(i, true);

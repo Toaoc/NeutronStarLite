@@ -14,6 +14,11 @@ class FullBatchSampleGraphOp: public ntsGraphOp{
 public:
     static uint64_t forward_compute_count;
     static uint64_t backward_compute_count;
+    static double forward_compute_time;
+    static double forward_other1;
+    static double forward_other2;
+    static double forward_other3;
+    static double forward_other4;
     std::vector<CSC_segment_pinned *> subgraphs;
     FullBatchSampleGraphOp(PartitionedGraph *partitioned_graph,VertexSubset *active)
     : ntsGraphOp(partitioned_graph, active) {
@@ -23,19 +28,29 @@ public:
     NtsVar forward(NtsVar &f_input) {
         //f_input = input;
         // 创建新的forward的输出Tensor
+        forward_other1 -= get_time();
         NtsVar f_output = graph_->Nts->NewKeyTensor(f_input, torch::DeviceType::CPU);
+        forward_other1 += get_time();
         // 获取输入Tensor的写指针
+        forward_other2 -= get_time();
         ValueType *f_input_buffer =
                 graph_->Nts->getWritableBuffer(f_input, torch::DeviceType::CPU);
+        forward_other2 += get_time();
         // 获取输出Tensor的写指针
+        forward_other3 -= get_time();
         ValueType *f_output_buffer =
                 graph_->Nts->getWritableBuffer(f_output, torch::DeviceType::CPU);
-        memset(f_output_buffer, 0,
-               sizeof(ValueType) * f_input.size(0) * f_input.size(1));
+        forward_other3 += get_time();
+
+        forward_other4 -= get_time();
+//        memset(f_output_buffer, 0,
+//               sizeof(ValueType) * f_input.size(0) * f_input.size(1));
         // 获取feature的维度大小
         int feature_size = f_input.size(1);
+        forward_other4 += get_time();
         LOG_INFO("前向图传播准备完成");
         // 进行前向传播累加
+        forward_compute_time -= get_time();
         graph_->process_edges_forward_decoupled_mutisockets<int, ValueType>(
                 [&](VertexId src, int current_send_partition) {
                     // lock free的话，就检查该顶点是否在另一个partition中有mirror顶点，有的话就进行发送
@@ -98,6 +113,7 @@ public:
                 },
                 subgraphs, feature_size, active_);
         // 返回输出向量
+        forward_compute_time += get_time();
         return f_output;
     }
     NtsVar backward(NtsVar &f_output_grad) {
@@ -106,7 +122,7 @@ public:
                 graph_->Nts->getWritableBuffer(f_output_grad, torch::DeviceType::CPU);
         ValueType *input_grad_buffer =
                 graph_->Nts->getWritableBuffer(f_input_grad, torch::DeviceType::CPU);
-        memset(input_grad_buffer, 0, sizeof(ValueType) * f_output_grad.size(0) * f_output_grad.size(1));
+//        memset(input_grad_buffer, 0, sizeof(ValueType) * f_output_grad.size(0) * f_output_grad.size(1));
         // int feature_size=graph_->gnnctx->layer_size[graph_->rtminfo->curr_layer];
         int feature_size = f_output_grad.size(1);
         ValueType *output_buffer = new ValueType[feature_size * graph_->threads];

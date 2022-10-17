@@ -16,6 +16,7 @@ Copyright (c) 2021-2022 Qiange Wang, Northeastern University
 #ifndef NTSSAMPLER_HPP
 #define NTSSAMPLER_HPP
 #include <mutex>
+#include <condition_variable>
 #include <random>
 #include <cmath>
 #include <stdlib.h>
@@ -167,7 +168,9 @@ public:
 class FullBatchSampler{
 private:
     int sample_limit;
-    std::atomic_flag sample_flag = ATOMIC_FLAG_INIT;
+    std::atomic<bool> sample_flag;
+    std::condition_variable sample_cv;
+    std::mutex cv_mutex;
     inline void deleteSampleGraph() {
        if(using_sample_graph == nullptr) {
            return;
@@ -183,6 +186,7 @@ public:
     int sample_total;
     int sample_count;
     float sample_rate;
+    std::thread* sample_thread;
     std::queue<std::vector<CSC_segment_pinned*>> sample_graphs;
 //    std::vector<CSC_segment_pinned> sample_graphs;
     std::mutex queue_mutex;
@@ -191,18 +195,21 @@ public:
     CSC_segment_pinned* using_sample_graph;
 
 
-    FullBatchSampler(PartitionedGraph* partitionedGraph1, int epoch_num, float sample_rate) {
+    FullBatchSampler(PartitionedGraph* partitionedGraph1, int epoch_num, int layer_num, float sample_rate) {
         this->partitionedGraph = partitionedGraph1;
         this->total_graph = partitionedGraph1->graph_chunks;
         this->using_sample_graph = nullptr;
-        this->sample_total = epoch_num;
+        this->sample_total = epoch_num * layer_num;
         this->sample_count = 0;
-        this->sample_limit = 20;
+        std::printf("epoch num:%d, layer num: %d\n", epoch_num, layer_num);
+        this->sample_limit = 2;
         this->sample_rate = sample_rate;
-        std::thread(&FullBatchSampler::sampling, this);
+        this->sample_thread = new std::thread(&FullBatchSampler::sampling, this);
+        this->sample_flag = false;
     }
     ~FullBatchSampler(){
 //        auto partition_id = partitionedGraph->partition_id;
+        this->sample_thread->join();
         deleteSampleGraph();
 
     }
@@ -210,25 +217,41 @@ public:
 
 
     std::vector<CSC_segment_pinned*> get_one() {
+        std::printf("get one debug 1\n");
         deleteSampleGraph();
+        std::printf("get one debug 2\n");
 //        if(sample_count == sample_total) {
 //            return std::vector<CSC_segment_pinned*>{};
 //        }
-        while(sample_graphs.size() < sample_limit/2+1 && sample_count < sample_total) {
-            if(!sample_flag.test_and_set()) {
-                std::thread(&FullBatchSampler::sampling, this);
-                break;
-            }
+        if(sample_graphs.size() < sample_limit/2+1 && sample_count < sample_total) {
+            std::printf("get one debug 3\n");
+            this->sample_flag.store(true);
+            sample_cv.notify_all();
         }
+        std::printf("get one debug 4\n");
         std::vector<CSC_segment_pinned*> return_graph = std::vector<CSC_segment_pinned*>{};
-        std::unique_lock<std::mutex> uniqueLock(queue_mutex);
+        std::unique_lock<std::mutex> uniqueLock(queue_mutex, std::defer_lock);
+        std::printf("get one debug 5\n");
         uniqueLock.lock();
-        if(sample_graphs.size() != 0) {
-            return_graph = sample_graphs.front();
-            using_sample_graph = return_graph[partitionedGraph->partition_id];
-            sample_graphs.pop();
+        std::printf("get one debug 6\n");
+        if(sample_graphs.size() == 0) {
+            uniqueLock.unlock();
+            std::unique_lock<std::mutex> cv_lock(cv_mutex);
+            std::printf("get one debug 7\n");
+            sample_cv.wait(cv_lock, [&]{return sample_graphs.size() != 0;});
+            sample_limit++;
+            sample_flag.store(true);
+            sample_cv.notify_all();
+            uniqueLock.lock();
         }
+        std::printf("get one debug 8\n");
+        return_graph = sample_graphs.front();
+        using_sample_graph = return_graph[partitionedGraph->partition_id];
+        sample_graphs.pop();
+        std::printf("get one debug 9\n");
+
         uniqueLock.unlock();
+        std::printf("get one debug 10\n");
         return return_graph;
     }
 
@@ -237,14 +260,20 @@ public:
     }
 
     void sampling() {
-        if(sample_flag.test_and_set()) {
-            return;
+        while(true) {
+            while(sample_count < sample_total && sample_graphs.size() < sample_limit) {
+                reservoir_sample(sample_rate);
+                sample_count++;
+            }
+            std::printf("采样结束，采样数量为：%d\n", sample_count);
+            this->sample_flag.store(false);
+            sample_cv.notify_all();
+            if(sample_count == sample_total) {
+                break;
+            }
+            std::unique_lock<std::mutex> uniqueLock(cv_mutex);
+            sample_cv.wait(uniqueLock, [&]{return this->sample_flag.load();});
         }
-        while(sample_count < sample_total && sample_graphs.size() < sample_limit) {
-            reservoir_sample(sample_rate);
-            sample_count++;
-        }
-        sample_flag.clear();
     }
 
     void reservoir_sample(float sample_rate){
@@ -338,10 +367,12 @@ public:
         sample_graph[partition_id] = cscSegmentPinned;
 //        LOG_INFO("赋值之后");
 
-        std::unique_lock<std::mutex> uniqueLock(queue_mutex);
+        std::printf("开始入队\n");
+        std::unique_lock<std::mutex> uniqueLock(queue_mutex, std::defer_lock);
         uniqueLock.lock();
         sample_graphs.push(sample_graph);
         uniqueLock.unlock();
+        std::printf("入队完成\n");
 //        LOG_INFO("存储子图");
 
     }

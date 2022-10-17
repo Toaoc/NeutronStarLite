@@ -10,6 +10,12 @@
 
 uint64_t nts::op::FullBatchSampleGraphOp::forward_compute_count = 0;
 uint64_t nts::op::FullBatchSampleGraphOp::backward_compute_count = 0;
+double nts::op::FullBatchSampleGraphOp::forward_compute_time = 0;
+double nts::op::FullBatchSampleGraphOp::forward_other1 = 0;
+double nts::op::FullBatchSampleGraphOp::forward_other2= 0;
+double nts::op::FullBatchSampleGraphOp::forward_other3 = 0;
+double nts::op::FullBatchSampleGraphOp::forward_other4 = 0;
+
 
 
 class GCN_FULL_SAMPLE_impl {
@@ -60,6 +66,14 @@ public:
     double graph_time = 0;
     double all_graph_time = 0;
 
+    double sample_time = 0;
+    double forward_time = 0;
+    double backward_time = 0;
+    double test_time = 0;
+    double loss_time = 0;
+    double update_time = 0;
+    double forward_graph_time = 0;
+
     GCN_FULL_SAMPLE_impl(Graph<Empty> *graph_, int iterations_,
                  bool process_local = false, bool process_overlap = false) {
         graph = graph_;
@@ -88,7 +102,7 @@ public:
         graph->init_communicatior();
         //cp = new nts::autodiff::ComputionPath(gt, subgraphs);
         ctx=new nts::ctx::NtsContext();
-        sampler = new FullBatchSampler(partitioned_graph, graph->config->epochs, 0.5);
+        sampler = new FullBatchSampler(partitioned_graph, graph->config->epochs,graph->gnnctx->layer_size.size() - 1, 0.5);
     }
     void init_nn() {
 
@@ -227,9 +241,13 @@ public:
 //            LOG_INFO("开始采样");
 //            sampler->reservoir_sample(0.5);
 //            LOG_DEBUG("采样完成");
+            this->sample_time -= get_time();
             auto sample_graph = sampler->get_one();
+            this->sample_time += get_time();
             partitioned_graph->graph_chunks = sample_graph;
+            forward_graph_time -= get_time();
             NtsVar Y_i= ctx->runGraphOp<nts::op::FullBatchSampleGraphOp>(partitioned_graph, active,X[i]);
+            forward_graph_time += get_time();
 //            LOG_INFO("图操作完成");
             X[i + 1]=ctx->runVertexForward([&](NtsVar n_i,NtsVar v_i){
                                                if(i<(graph->gnnctx->layer_size.size() - 2)){
@@ -270,28 +288,46 @@ public:
             }
 
             // 执行前向传播
+            forward_time -= get_time();
             Forward();
+            forward_time += get_time();
             // 计算训练集准确度
+            test_time -= get_time();
             Test(0);
             // 计算验证集准确度
             Test(1);
             // 计算测试集准确度
             Test(2);
+            test_time += get_time();
             // 计算loss
+            loss_time -= get_time();
             Loss();
+            loss_time += get_time();
 
             // 执行loss反向传播
+            backward_time -= get_time();
             ctx->self_backward();
+            backward_time += get_time();
             // 利用梯度更新参数
+            update_time -= get_time();
             Update();
+            update_time += get_time();
 //       ctx->debug();
             if (graph->partition_id == 0)
                 std::cout << "Nts::Running.Epoch[" << i_i << "]:loss\t" << loss
                           << std::endl;
         }
         exec_time += get_time();
+        using FOP = nts::op::FullBatchSampleGraphOp;
         LOG_INFO("前向传播计算总次数：%lu", nts::op::FullBatchSampleGraphOp::forward_compute_count);
         LOG_INFO("反向传播计算总次数：%lu", nts::op::FullBatchSampleGraphOp::backward_compute_count);
+        LOG_INFO("采样时间： %lf\n", sample_time);   // 0.6 ~0.7之间
+        LOG_INFO("前向: %lf, test: %lf, loss, %lf, 反向：%lf, update: %lf", forward_time, test_time, loss_time, backward_time, update_time);
+        LOG_INFO("前向图计算时间：%lf, 反向图计算时间：%lf", graph->forward_process_time, graph->backward_process_time);
+        LOG_INFO("上层前向图计算时间：%lf", forward_graph_time);
+        LOG_INFO("调用前向图计算时间：%lf", nts::op::FullBatchSampleGraphOp::forward_compute_time);
+        LOG_INFO("调用其他计算时间: %lf %lf %lf %lf", FOP::forward_other1, FOP::forward_other2, FOP::forward_other3, FOP::forward_other4);
+        LOG_INFO("run graph op: forward graph: %lf, forward other: %lf\n", ctx->forward_graph_time, ctx->forward_other_time);
 //    std::string str="a10";
 //    at::ArrayRef<at::Dimname>names({at::Dimname::fromSymbol(at::Symbol::dimname(str)),at::Dimname::fromSymbol(at::Symbol::dimname("b10"))});
 //    at::ArrayRef<at::Dimname>names({at::Dimname::fromSymbol(at::Symbol::dimname(str)),at::Dimname::fromSymbol(at::Symbol::dimname("b10"))});
